@@ -4,9 +4,13 @@ import path from "node:path";
 import process from "node:process";
 
 import { applyCliProfileEnv, parseCliProfileArgs } from "./cli/profile.js";
-import { isTruthyEnvValue } from "./infra/env.js";
+import { loadDotEnv } from "./infra/dotenv.js";
+import { isTruthyEnvValue, normalizeEnv } from "./infra/env.js";
 import { installProcessWarningFilter } from "./infra/warnings.js";
 import { attachChildProcessBridge } from "./process/child-process-bridge.js";
+
+loadDotEnv({ quiet: true });
+normalizeEnv();
 
 process.title = "moltbot";
 installProcessWarningFilter();
