@@ -1,9 +1,9 @@
-import { DEFAULT_CONTEXT_TOKENS } from "../agents/defaults.js";
+import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { parseModelRef } from "../agents/model-selection.js";
 import { resolveTalkApiKey } from "./talk.js";
 import type { MoltbotConfig } from "./types.js";
 import { DEFAULT_AGENT_MAX_CONCURRENT, DEFAULT_SUBAGENT_MAX_CONCURRENT } from "./agent-limits.js";
-import type { ModelDefinitionConfig } from "./types.models.js";
+import type { ModelDefinitionConfig, ModelProviderConfig } from "./types.models.js";
 
 type WarnState = { warned: boolean };
 
@@ -33,6 +33,29 @@ const DEFAULT_MODEL_COST: ModelDefinitionConfig["cost"] = {
 };
 const DEFAULT_MODEL_INPUT: ModelDefinitionConfig["input"] = ["text"];
 const DEFAULT_MODEL_MAX_TOKENS = 8192;
+const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1";
+const DEFAULT_OLLAMA_MODEL_ID = "phi3:mini";
+const DEFAULT_OLLAMA_MODEL_NAME = "Phi-3 Mini";
+const DEFAULT_OLLAMA_CONTEXT_WINDOW = 8192;
+const DEFAULT_OLLAMA_MAX_TOKENS = 8192;
+
+const DEFAULT_OLLAMA_MODEL: ModelDefinitionConfig = {
+  id: DEFAULT_OLLAMA_MODEL_ID,
+  name: DEFAULT_OLLAMA_MODEL_NAME,
+  reasoning: false,
+  input: [...DEFAULT_MODEL_INPUT],
+  cost: DEFAULT_MODEL_COST,
+  contextWindow: DEFAULT_OLLAMA_CONTEXT_WINDOW,
+  maxTokens: DEFAULT_OLLAMA_MAX_TOKENS,
+};
+
+function buildDefaultOllamaProvider(): ModelProviderConfig {
+  return {
+    baseUrl: DEFAULT_OLLAMA_BASE_URL,
+    api: "openai-completions",
+    models: [DEFAULT_OLLAMA_MODEL],
+  };
+}
 
 type ModelDefinitionLike = Partial<ModelDefinitionConfig> &
   Pick<ModelDefinitionConfig, "id" | "name">;
@@ -147,10 +170,47 @@ export function applyModelDefaults(cfg: MoltbotConfig): MoltbotConfig {
   let mutated = false;
   let nextCfg = cfg;
 
-  const providerConfig = nextCfg.models?.providers;
-  if (providerConfig) {
-    const nextProviders = { ...providerConfig };
-    for (const [providerId, provider] of Object.entries(providerConfig)) {
+  const existingModelsConfig = nextCfg.models ?? {};
+  const providerConfig = existingModelsConfig.providers;
+  const nextProviders = providerConfig ? { ...providerConfig } : {};
+  let providersMutated = false;
+
+  const ollamaProvider = nextProviders.ollama as ModelProviderConfig | undefined;
+  if (!ollamaProvider) {
+    nextProviders.ollama = buildDefaultOllamaProvider();
+    providersMutated = true;
+  } else {
+    let ollamaMutated = false;
+    const nextOllama = { ...ollamaProvider };
+    if (!nextOllama.baseUrl?.trim()) {
+      nextOllama.baseUrl = DEFAULT_OLLAMA_BASE_URL;
+      ollamaMutated = true;
+    }
+    if (!Array.isArray(nextOllama.models) || nextOllama.models.length === 0) {
+      nextOllama.models = [DEFAULT_OLLAMA_MODEL];
+      ollamaMutated = true;
+    }
+    if (ollamaMutated) {
+      nextProviders.ollama = nextOllama;
+      providersMutated = true;
+    }
+  }
+
+  if (providersMutated) {
+    nextCfg = {
+      ...nextCfg,
+      models: {
+        ...existingModelsConfig,
+        providers: nextProviders,
+      },
+    };
+    mutated = true;
+  }
+
+  const updatedProviderConfig = nextCfg.models?.providers;
+  if (updatedProviderConfig) {
+    const nextUpdatedProviders = { ...updatedProviderConfig };
+    for (const [providerId, provider] of Object.entries(updatedProviderConfig)) {
       const models = provider.models;
       if (!Array.isArray(models) || models.length === 0) continue;
       let providerMutated = false;
@@ -195,7 +255,7 @@ export function applyModelDefaults(cfg: MoltbotConfig): MoltbotConfig {
       });
 
       if (!providerMutated) continue;
-      nextProviders[providerId] = { ...provider, models: nextModels };
+      nextUpdatedProviders[providerId] = { ...provider, models: nextModels };
       mutated = true;
     }
 
@@ -204,7 +264,7 @@ export function applyModelDefaults(cfg: MoltbotConfig): MoltbotConfig {
         ...nextCfg,
         models: {
           ...nextCfg.models,
-          providers: nextProviders,
+          providers: nextUpdatedProviders,
         },
       };
     }
@@ -246,10 +306,39 @@ export function applyAgentDefaults(cfg: MoltbotConfig): MoltbotConfig {
   const hasSubMax =
     typeof defaults?.subagents?.maxConcurrent === "number" &&
     Number.isFinite(defaults.subagents.maxConcurrent);
-  if (hasMax && hasSubMax) return cfg;
 
   let mutated = false;
   const nextDefaults = defaults ? { ...defaults } : {};
+  const modelDefaults = defaults?.model;
+  const primaryDefault = `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}`;
+  const primary =
+    typeof modelDefaults?.primary === "string" && modelDefaults.primary.trim()
+      ? modelDefaults.primary.trim()
+      : primaryDefault;
+  const fallbacks = Array.isArray(modelDefaults?.fallbacks) ? modelDefaults.fallbacks : [];
+  const needsModelDefaults = !modelDefaults?.primary || modelDefaults.fallbacks === undefined;
+  if (needsModelDefaults) {
+    nextDefaults.model = {
+      primary,
+      fallbacks,
+    };
+    mutated = true;
+  }
+
+  const memoryDefaults = defaults?.memorySearch;
+  const memoryProvider = memoryDefaults?.provider ?? "local";
+  const memoryFallback = memoryDefaults?.fallback ?? "none";
+  const needsMemoryDefaults =
+    memoryDefaults?.provider === undefined || memoryDefaults?.fallback === undefined;
+  if (needsMemoryDefaults) {
+    nextDefaults.memorySearch = {
+      ...memoryDefaults,
+      provider: memoryProvider,
+      fallback: memoryFallback,
+    };
+    mutated = true;
+  }
+  if (!needsModelDefaults && !needsMemoryDefaults && hasMax && hasSubMax) return cfg;
   if (!hasMax) {
     nextDefaults.maxConcurrent = DEFAULT_AGENT_MAX_CONCURRENT;
     mutated = true;
